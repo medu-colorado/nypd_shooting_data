@@ -1,0 +1,253 @@
+---
+title: "NYPD Shootings"
+author: "M. Dunn"
+date: "2023-09-20"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r install_packages_and_read}
+install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+library(tidyverse)
+```
+
+## Getting that Data
+
+First we need to get the data, of course.
+
+```{r, get_nypd_data}
+url = "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+nypd_shootings <- read_csv(url)
+```
+
+## Observing that Data
+
+Note that this data is NYPD shooting incident data in general. Not the NYPD shooting people.
+
+```{r, describe_nypd_data}
+summary(nypd_shootings)
+```
+
+Could use the lat long for geographical data at some point in time or perhaps even something clustering related.
+
+```{r, head_npyd}
+head(nypd_shootings)
+```
+
+## Name that bias
+
+-   Bias
+    -   Why is perp mostly empty?
+    -   Who collected the data?
+
+## Shootings by Date looks interesting
+
+Deciding to look at shootings by date. Taking whether or not the victim died and transforming that data into different variables.
+
+```{r boro}
+shots_by_date <- select(nypd_shootings, c(OCCUR_DATE, STATISTICAL_MURDER_FLAG)) %>%
+mutate(date = mdy(OCCUR_DATE)) %>%
+group_by(date) %>% summarize(murder_sum = length(STATISTICAL_MURDER_FLAG[STATISTICAL_MURDER_FLAG==TRUE]),
+non_murder_sum =
+length(STATISTICAL_MURDER_FLAG[STATISTICAL_MURDER_FLAG==FALSE]))
+
+```
+
+## Looking at a plot of deaths
+
+Deaths are a subset of the shootings of course, so that's what we are seeing in the graph.
+
+```{r rbydate}
+shots_by_date %>%
+  ggplot(aes(x = date, y = murder_sum)) +
+  geom_line(aes(color = "murder_sum")) +
+  geom_point(aes(color = "murder_sum")) +
+  geom_line(aes(y = non_murder_sum, color = "non_murder_sum")) +
+  #scale_y_log10() +
+  theme(legend.position="bottom", axis.text.x=element_text(angle=90)) +
+  labs(title = "Shooting Incidents: Murders and Non-Murders", y=NULL)
+
+```
+
+Well at least they didn't shoot to kill most of the time, which is a relief. But what if the victim died later in the hospital? Or couldn't walk or resume their normal life? What then?
+
+```{r how_many_shootings}
+summary(shots_by_date)
+```
+
+36 shootings in one day. Wow.
+
+```{r summary_of_shootings}
+summarize(shots_by_date, cases=sum(non_murder_sum), deaths=sum(murder_sum))
+```
+
+The majority of cases here are deaths.
+
+```{r summary_per_year}
+shots_by_date %>%
+mutate(year=year(date)) %>%
+group_by(year) %>%
+summarize(cases=sum(non_murder_sum), deaths=sum(murder_sum))
+```
+
+Looks like a fairly consistent probability of death per year.
+
+Not great with time series stuff but here is a plot of the time series of murders:
+
+```{r timeseries}
+
+shooty_shots_perc <- shots_by_date %>% select(non_murder_sum / murder_sum)
+plot.ts(shots_by_date %>% select(non_murder_sum / murder_sum))
+```
+
+Let's fit a simple time series model to the data. Using Holt Winters here, which is a classical time series model.
+
+```{r shooty_shots_time_series}
+
+shooty_forecasts <- HoltWinters(shots_by_date %>% select(murder_sum), gamma=FALSE)
+shooty_forecasts
+
+```
+
+```{r shooty_shots_SSE}
+shooty_forecasts$SSE
+```
+
+Was going off of some examples in R for forecasting this time series. The Sum of Squared errors was fairly high with the percentage data. It is a percentage so I think that a time series would be difficult without some sort of data transformation. I get a much smaller sum of squared error with just the deaths. The sum of squared error was previously 4 times as large (around 45000). The Sum of Squared error, for those not familiar, is a method of measuring goodness of fit for the model.
+
+If you fit the line (shown below) you can see a conservative estimate of the police shooting related deaths using the Holt-Winters algorithm. Not bad. Let's move on to something else in the data set.
+
+```{r shooty_shots_forecast}
+plot(shots_by_date$murder_sum, ylab="murder", type="l")
+lines(shooty_forecasts$fitted[,1], lty=2, col="red")
+```
+
+## General Data Analysis
+
+Just going through some regular data analysis below.
+
+```{r summary_per_boro}
+nypd_shootings %>%
+select(BORO, STATISTICAL_MURDER_FLAG) %>%
+group_by(BORO) %>%
+summarize(murder_sum = length(STATISTICAL_MURDER_FLAG[STATISTICAL_MURDER_FLAG==TRUE]),
+non_murder_sum =
+length(STATISTICAL_MURDER_FLAG[STATISTICAL_MURDER_FLAG==FALSE]))
+```
+
+Ah, well that's why I hear about Brooklyn so much. Surprised Staten Island isn't larger. But Manhattan surprises me. Must be per population and wealth distribution.
+
+```{r racial_tensions}
+nypd_shootings %>%
+select(VIC_RACE, STATISTICAL_MURDER_FLAG) %>%
+group_by(VIC_RACE) %>%
+summarize(murder_sum = length(STATISTICAL_MURDER_FLAG[STATISTICAL_MURDER_FLAG==TRUE]),
+non_murder_sum =
+length(STATISTICAL_MURDER_FLAG[STATISTICAL_MURDER_FLAG==FALSE]))
+```
+
+Wow, that's a whole lot of black folks getting shot. Like a lot. Hispanics, coming in a not so close second. But Black Hispanics coming in at a third. Very interesting.
+
+```{r gender_tensions}
+nypd_shootings %>%
+select(VIC_SEX, STATISTICAL_MURDER_FLAG) %>%
+group_by(VIC_SEX) %>%
+summarize(murder_sum = length(STATISTICAL_MURDER_FLAG[STATISTICAL_MURDER_FLAG==TRUE]),
+non_murder_sum =
+length(STATISTICAL_MURDER_FLAG[STATISTICAL_MURDER_FLAG==FALSE]))
+```
+
+Wow, very few women getting shot in comparison. Assuming this is the "women-are-wonderful" effect shown in most societies.
+
+This is interesting. Let's try precinct.
+
+```{r precinct_diff}
+nypd_shootings %>%
+select(PRECINCT, STATISTICAL_MURDER_FLAG) %>%
+group_by(PRECINCT) %>%
+summarize(murder_sum = length(STATISTICAL_MURDER_FLAG[STATISTICAL_MURDER_FLAG==TRUE]),
+non_murder_sum =
+length(STATISTICAL_MURDER_FLAG[STATISTICAL_MURDER_FLAG==FALSE]))
+```
+
+Yes, it looks like some precincts are far higher than others.
+
+```{r perp_race_tensions}
+nypd_shootings %>%
+select(PERP_RACE, STATISTICAL_MURDER_FLAG) %>%
+group_by(PERP_RACE) %>%
+summarize(murder_sum = length(STATISTICAL_MURDER_FLAG[STATISTICAL_MURDER_FLAG==TRUE]),
+non_murder_sum =
+length(STATISTICAL_MURDER_FLAG[STATISTICAL_MURDER_FLAG==FALSE]))
+```
+
+A lot of NA's for the perpetrator's race folks. Gonna be talking a whole lot of smack about the NYPD from now on. There's my personal bias reflecting on the personal bias in the data.
+
+I could probably use the statistical murder flag as a boolean input to a logistic regression model.
+
+I need to make a train and test set and remove some of these categorical variables.
+
+## Logistic Model
+
+Cleaning some train and test data for a logistic model. I wound up not using the test data, but saving it in the data due to posterity.
+
+```{r train_and_test}
+
+train <- nypd_shootings %>%
+mutate(date = mdy(OCCUR_DATE)) %>%
+filter(date < "2022-01-01")
+
+test <- nypd_shootings %>%
+mutate(date = mdy(OCCUR_DATE)) %>%
+filter(date >= "2022-01-01")
+
+train$BORO <- as.factor(train$BORO)
+train$PRECINCT <- as.factor(train$PRECINCT)
+train$PERP_AGE_GROUP <- as.factor(train$PERP_AGE_GROUP)
+train$PERP_SEX <- as.factor(train$PERP_SEX)
+train$PERP_RACE <- as.factor(train$PERP_RACE)
+train$VIC_AGE_GROUP <- as.factor(train$VIC_AGE_GROUP)
+train$VIC_SEX <- as.factor(train$VIC_SEX)
+train$VIC_RACE <- as.factor(train$VIC_RACE)
+train$MONTH <- as.factor(month(train$date))
+train$YEAR <- as.factor(year(train$date))
+
+test$BORO <- as.factor(test$BORO)
+test$PRECINCT <- as.factor(test$PRECINCT)
+test$PERP_AGE_GROUP <- as.factor(test$PERP_AGE_GROUP)
+test$PERP_SEX <- as.factor(test$PERP_SEX)
+test$PERP_RACE <- as.factor(test$PERP_RACE)
+test$VIC_AGE_GROUP <- as.factor(test$VIC_AGE_GROUP)
+test$VIC_SEX <- as.factor(test$VIC_SEX)
+test$VIC_RACE <- as.factor(test$VIC_RACE)
+test$MONTH <- as.factor(month(test$date))
+test$YEAR <- as.factor(year(test$date))
+```
+
+Now that I have my train and test sets it's time to run it through a small, simple logistic regression model. The variables after the "\~" are the ones being used in the model. The statistical murder flag is the output.
+
+```{r glm}
+
+logistic_model <- glm(train$STATISTICAL_MURDER_FLAG ~ train$BORO + train$PRECINCT + train$PERP_AGE_GROUP + train$PERP_SEX + train$PERP_RACE + train$VIC_AGE_GROUP + train$VIC_SEX + train$VIC_RACE + train$MONTH + train$YEAR, family = binomial)
+
+```
+
+```{r parsing_estimate}
+summary(logistic_model)
+```
+
+Only a few of the variables were statistically significant in regards to the overall model. Those were:
+
+-   The specific year
+-   Some of the precincts
+-   The age of the victim
+-   The age of the perpetrator
+
+Although I took the test and training set out of habit, I only really needed the test set here to see the goodness of fit for the variables. Very interesting that the race wasn't significant for goodness of fit in this round. If I took the year out as a variable, it may be significant. Very interesting. So age looks like a larger factor here. Fascinating.
+
+Note that the asterisk next to the p-value (last column) is how to tell if the variables were significant or not. Well my perception is really changed here on shootings. I came in with a specific bias and left with update in my perception. Thank you. Dare I say this dataset was fun to look at.
